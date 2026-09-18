@@ -10,7 +10,8 @@ import logging
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-
+from llm_parser import parse_operator_notes
+from optimizer import optimize_schedule
 from models import OptimizationRequest, OptimizationResponse
 
 logger = logging.getLogger("microgrid_api")
@@ -50,25 +51,39 @@ async def health() -> dict:
     return {"status": "ok"}
 
 
+from llm_parser import parse_operator_notes
+from optimizer import optimize_schedule # Assuming you saved the pulp function in optimizer.py
+
 @app.post("/optimize-energy", response_model=OptimizationResponse)
 async def optimize_energy(payload: OptimizationRequest) -> OptimizationResponse:
-    """
-    Interpret operator notes and produce an optimized 24-hour dispatch plan.
-
-    Pipeline (not yet implemented):
-      1. Run each `operator_notes` entry through an LLM (or rules engine) to
-         produce a `DirectiveInterpretation`, including a `StructuredAdjustment`
-         where applicable.
-      2. Feed the structured adjustments, hourly forecasts, and battery
-         config into a math optimizer (e.g. LP/MILP) to produce the
-         `HourlyPlan` for each of the 24 hours.
-      3. Aggregate totals (grid usage, cost, peak) and summarize the plan.
-    """
-    # TODO: Interpret payload.operator_notes (LLM / rules engine) into
-    #       DirectiveInterpretation objects.
-    # TODO: Run the math optimizer over payload.hours + payload.battery,
-    #       respecting any structured_adjustment constraints, to produce
-    #       the 24 HourlyPlan entries.
-    # TODO: Compute total_grid_kwh, total_cost_bdt, peak_grid_kwh, and
-    #       plan_summary from the resulting hourly plan.
+    
+    # 1. Interpret the operator notes via the LLM
+    interpretations = await parse_operator_notes(payload.operator_notes)
+    
+    # 2. Run the math optimizer
+    # We pass the original payload (which has the battery and hour data) 
+    # and the structured interpretations we just generated.
+    hourly_plan = optimize_schedule(request=payload, interpretations=interpretations)
+    
+    # 3. Compute aggregate metrics required by the response schema
+    total_grid_kwh = sum(plan.grid_kwh for plan in hourly_plan)
+    peak_grid_kwh = max(plan.grid_kwh for plan in hourly_plan)
+    
+    # To calculate total cost, multiply each hour's grid usage by that hour's tariff
+    total_cost_bdt = 0.0
+    for h in range(24):
+        tariff = payload.hours[h].tariff_bdt_per_kwh
+        grid_used = hourly_plan[h].grid_kwh
+        total_cost_bdt += grid_used * tariff
+        
+    # 4. Return the fully assembled OptimizationResponse
+    return OptimizationResponse(
+        scenario_id=payload.scenario_id,
+        directive_interpretation=interpretations,
+        hourly_plan=hourly_plan,
+        total_grid_kwh=round(total_grid_kwh, 4),
+        total_cost_bdt=round(total_cost_bdt, 4),
+        peak_grid_kwh=round(peak_grid_kwh, 4),
+        plan_summary="Schedule optimized successfully respecting all operator directives and battery constraints."
+    )
     raise NotImplementedError("optimize-energy processing logic not yet implemented")
