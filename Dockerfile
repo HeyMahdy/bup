@@ -23,5 +23,5 @@ WORKDIR /app/bup
 
 EXPOSE 8000
 
-# Bind all interfaces so the judging harness can reach the service.
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Render and similar hosts inject $PORT; default to 8000 locally.
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]

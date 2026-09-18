@@ -141,6 +141,21 @@ docker run --rm -p 8000:8000 \
 Required runtime environment variables: `OPENAI_API_KEY` (required),
 `OPENAI_MODEL` (optional, default `gpt-4o-mini`). Exposed port: **8000**.
 Binds to `0.0.0.0` (no secrets in the image layers).
+
+## Render deploy (public API)
+
+If the service fails with `.venv/bin/uvicorn: No such file or directory`, the
+Start Command is wrong. Use these settings (also in `render.yaml`):
+
+| Setting | Value |
+|---------|-------|
+| Build Command | `pip install -r requirements.txt` |
+| Start Command | `uvicorn main:app --app-dir bup --host 0.0.0.0 --port $PORT` |
+| Health Check Path | `/health` |
+
+Environment variables on Render: `OPENAI_API_KEY` (required), `OPENAI_MODEL`
+(optional). Do **not** prefix the start command with `.venv/bin/`.
+
 ## LLM, guardrails, and optimizer
 
 - **LLM role:** Mandatory interpretation of `operator_notes` into
