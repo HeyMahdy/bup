@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 # Import your components from the other files
 from models import OptimizationRequest, OptimizationResponse
 from llm_parser import parse_operator_notes
+from guardrails import validate_interpretations
 from lp_solver import optimize_schedule
 logger = logging.getLogger("microgrid_api")
 logging.basicConfig(level=logging.INFO)
@@ -28,10 +29,13 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
 async def health() -> dict:
     return {"status": "ok"}
 
-@app.post("/api/optimize", response_model=OptimizationResponse)
+@app.post("/optimize-energy", response_model=OptimizationResponse)
 async def optimize_energy(payload: OptimizationRequest) -> OptimizationResponse:
     # 1. Interpret the operator notes via the LLM (Asynchronous)
-    interpretations = await parse_operator_notes(payload.operator_notes)
+    interpretations = await parse_operator_notes(payload)
+
+    # Treat LLM output as untrusted until deterministic validation succeeds.
+    interpretations = validate_interpretations(payload, interpretations)
     
     # 2. Run the math optimizer (Synchronous/CPU-bound)
     hourly_plan = optimize_schedule(request=payload, interpretations=interpretations)

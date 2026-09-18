@@ -5,8 +5,8 @@ from openai import AsyncOpenAI
 from pydantic import BaseModel
 
 load_dotenv()
-# Import the exact schema you defined for the FastAPI response
-from models import DirectiveInterpretation
+# Import the exact schemas used by the API.
+from models import DirectiveInterpretation, OptimizationRequest
 
 class DirectiveExtractionResult(BaseModel):
     """Wrapper to force the LLM to return an array of interpretations."""
@@ -41,10 +41,13 @@ CRITICAL NORMALIZATION RULES:
 - Time windows use whole-hour intervals where start hour is INCLUDED and end hour is EXCLUDED (e.g. 1 PM to 3 PM -> [13, 14]).
 - All hours arrays must contain unique integers between 0 and 23 sorted in ascending order.
 - 'applies' must be false ONLY for 'no_op', and true for all other 5 directive types.
+- If a minimum reserve is expressed as a fraction or percentage of battery capacity,
+  calculate minimum_energy_kwh using the battery capacity supplied with the notes.
 """
 
-async def parse_operator_notes(notes: List[str]) -> List[DirectiveInterpretation]:
+async def parse_operator_notes(request: OptimizationRequest) -> List[DirectiveInterpretation]:
     """Asynchronously calls OpenAI to parse notes directly into Pydantic models."""
+    notes = request.operator_notes
     if not notes:
         return []
 
@@ -59,7 +62,13 @@ async def parse_operator_notes(notes: List[str]) -> List[DirectiveInterpretation
         temperature=0.0, # 0.0 is critical for deterministic judge evaluation
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT.strip()},
-            {"role": "user", "content": f"Operator Notes:\n{formatted_notes}"}
+            {
+                "role": "user",
+                "content": (
+                    f"Battery capacity: {request.battery.capacity_kwh} kWh\n"
+                    f"Operator Notes:\n{formatted_notes}"
+                ),
+            }
         ],
         response_format=DirectiveExtractionResult
     )

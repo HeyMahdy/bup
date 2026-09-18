@@ -4,7 +4,7 @@ Pydantic v2 data models for the Smart Microgrid Energy Optimization API.
 
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_serializer
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +99,15 @@ class StructuredAdjustment(BaseModel):
         if any(h < 0 or h > 23 for h in v):
             raise ValueError("each hour must be between 0 and 23")
         return v
+
+    @model_serializer(mode="wrap")
+    def serialize_without_unused_fields(self, handler):
+        """Keep the API adjustment object limited to its directive-specific fields."""
+        return {
+            key: value
+            for key, value in handler(self).items()
+            if value is not None
+        }
 
 
 class DirectiveInterpretation(BaseModel):
