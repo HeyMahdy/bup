@@ -1,20 +1,19 @@
-"""Deterministic validation for LLM-produced operator directives."""
+"""Deterministic validation for untrusted LLM-produced operator directives."""
+
+from __future__ import annotations
 
 import math
 from typing import List
 
+from exceptions import GuardrailValidationError
 from models import DirectiveInterpretation, OptimizationRequest
-
-
-class GuardrailValidationError(ValueError):
-    """Raised when LLM output does not satisfy the challenge contract."""
 
 
 def validate_interpretations(
     request: OptimizationRequest,
     interpretations: List[DirectiveInterpretation],
 ) -> List[DirectiveInterpretation]:
-    """Validate untrusted LLM output before it reaches the optimizer."""
+    """Validate LLM output before it reaches the optimizer."""
 
     if len(interpretations) != len(request.operator_notes):
         raise GuardrailValidationError(
@@ -29,6 +28,11 @@ def validate_interpretations(
         )
 
     for item in interpretations:
+        if not item.explanation.strip():
+            raise GuardrailValidationError(
+                f"Note {item.note_index}: explanation must be a non-empty string"
+            )
+
         if item.directive_type == "no_op":
             if item.applies or item.structured_adjustment is not None:
                 raise GuardrailValidationError(
@@ -83,9 +87,11 @@ def validate_interpretations(
     return interpretations
 
 
-def _require_only(note_index: int, fields: dict[str, float | None], required: str | None) -> None:
-    """Require the numeric field appropriate for a directive and reject the others."""
-
+def _require_only(
+    note_index: int,
+    fields: dict[str, float | None],
+    required: str | None,
+) -> None:
     for name, value in fields.items():
         if name == required:
             if value is None or isinstance(value, bool) or not math.isfinite(value):

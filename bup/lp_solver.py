@@ -1,122 +1,145 @@
-import pulp
+"""24-hour microgrid dispatch optimizer (PuLP / CBC)."""
+
+from __future__ import annotations
+
 from typing import List
-from models import OptimizationRequest, DirectiveInterpretation, HourlyPlan
+
+import pulp
+
+from exceptions import OptimizationInfeasibleError
+from models import DirectiveInterpretation, HourlyPlan, OptimizationRequest
+
+_IDLE_EPS = 0.001
+
 
 def optimize_schedule(
-    request: OptimizationRequest, 
-    interpretations: List[DirectiveInterpretation]
+    request: OptimizationRequest,
+    interpretations: List[DirectiveInterpretation],
 ) -> List[HourlyPlan]:
-    
-    # 1. Initialize Baseline Arrays
-    # We create arrays for the bounds that might be modified by the LLM directives
-    effective_solar = [h.solar_kwh for h in request.hours]
+    """
+    Minimize grid electricity cost subject to energy balance, battery physics,
+    and all applicable operator directives.
+    """
+
+    # hours are normalized to hour-index order by OptimizationRequest.
+    hours = request.hours
+    effective_solar = [entry.solar_kwh for entry in hours]
     min_reserve = [request.battery.minimum_energy_kwh for _ in range(24)]
-    max_grid = [None for _ in range(24)] # None means infinity/no cap
+    max_grid: list[float | None] = [None for _ in range(24)]
     charge_allowed = [True for _ in range(24)]
     discharge_allowed = [True for _ in range(24)]
 
-    # 2. Apply the LLM Directives as Pre-Processing
-    # We iterate through the interpretations and tighten the physical bounds
-    for interp in interpretations:
-        if not interp.applies or interp.structured_adjustment is None:
+    for interpretation in interpretations:
+        if not interpretation.applies or interpretation.structured_adjustment is None:
             continue
-            
-        adj = interp.structured_adjustment
-        dtype = interp.directive_type
-        
-        for h in adj.hours:
-            if dtype == "solar_reduction":
-                effective_solar[h] = request.hours[h].solar_kwh * adj.factor
-            elif dtype == "minimum_battery_reserve":
-                min_reserve[h] = max(min_reserve[h], adj.minimum_energy_kwh)
-            elif dtype == "no_charge_window":
-                charge_allowed[h] = False
-            elif dtype == "no_discharge_window":
-                discharge_allowed[h] = False
-            elif dtype == "max_grid_window":
-                max_grid[h] = adj.max_grid_kwh
 
-    # 3. Initialize the LP Problem
-    prob = pulp.LpProblem("GridWise_Optimization", pulp.LpMinimize)
+        adjustment = interpretation.structured_adjustment
+        directive = interpretation.directive_type
 
-    # 4. Define Decision Variables
+        for hour in adjustment.hours:
+            if directive == "solar_reduction":
+                # Multiple solar reductions on the same hour: keep the stricter (lower) factor.
+                effective_solar[hour] = min(
+                    effective_solar[hour],
+                    hours[hour].solar_kwh * adjustment.factor,
+                )
+            elif directive == "minimum_battery_reserve":
+                min_reserve[hour] = max(min_reserve[hour], adjustment.minimum_energy_kwh)
+            elif directive == "no_charge_window":
+                charge_allowed[hour] = False
+            elif directive == "no_discharge_window":
+                discharge_allowed[hour] = False
+            elif directive == "max_grid_window":
+                cap = adjustment.max_grid_kwh
+                max_grid[hour] = (
+                    cap if max_grid[hour] is None else min(max_grid[hour], cap)
+                )
+
+    problem = pulp.LpProblem("GridWise_Optimization", pulp.LpMinimize)
+
     grid = {}
     solar_used = {}
     charge = {}
     discharge = {}
     battery = {}
 
-    for h in range(24):
-        # Grid cap applies if max_grid_window was triggered
-        grid[h] = pulp.LpVariable(f"grid_{h}", lowBound=0, upBound=max_grid[h])
-        
-        # Solar used cannot exceed the effective solar after panel cleaning/reductions
-        solar_used[h] = pulp.LpVariable(f"solar_used_{h}", lowBound=0, upBound=effective_solar[h])
-
-        # Hardware limits + Operator directive overrides (no_charge / no_discharge)
-        c_limit = request.battery.max_charge_kwh_per_hour if charge_allowed[h] else 0.0
-        d_limit = request.battery.max_discharge_kwh_per_hour if discharge_allowed[h] else 0.0
-        
-        charge[h] = pulp.LpVariable(f"charge_{h}", lowBound=0, upBound=c_limit)
-        discharge[h] = pulp.LpVariable(f"discharge_{h}", lowBound=0, upBound=d_limit)
-
-        # Battery capacity and dynamic reserve limits
-        battery[h] = pulp.LpVariable(
-            f"battery_{h}", 
-            lowBound=min_reserve[h], 
-            upBound=request.battery.capacity_kwh
+    for hour in range(24):
+        grid[hour] = pulp.LpVariable(
+            f"grid_{hour}",
+            lowBound=0,
+            upBound=max_grid[hour],
+        )
+        solar_used[hour] = pulp.LpVariable(
+            f"solar_used_{hour}",
+            lowBound=0,
+            upBound=effective_solar[hour],
         )
 
-    # 5. The Objective: Minimize total BDT cost
-    prob += pulp.lpSum(grid[h] * request.hours[h].tariff_bdt_per_kwh for h in range(24))
+        charge_limit = (
+            request.battery.max_charge_kwh_per_hour if charge_allowed[hour] else 0.0
+        )
+        discharge_limit = (
+            request.battery.max_discharge_kwh_per_hour if discharge_allowed[hour] else 0.0
+        )
+        charge[hour] = pulp.LpVariable(f"charge_{hour}", lowBound=0, upBound=charge_limit)
+        discharge[hour] = pulp.LpVariable(
+            f"discharge_{hour}",
+            lowBound=0,
+            upBound=discharge_limit,
+        )
+        battery[hour] = pulp.LpVariable(
+            f"battery_{hour}",
+            lowBound=min_reserve[hour],
+            upBound=request.battery.capacity_kwh,
+        )
 
-    # 6. Apply Hard Constraints
-    for h in range(24):
-        # A. Energy Balance Equation
-        prob += grid[h] + solar_used[h] + discharge[h] == request.hours[h].demand_kwh + charge[h]
+    problem += pulp.lpSum(
+        grid[hour] * hours[hour].tariff_bdt_per_kwh for hour in range(24)
+    )
 
-        # B. Battery State Transition
-        prev_energy = request.battery.initial_energy_kwh if h == 0 else battery[h-1]
-        prob += battery[h] == prev_energy + charge[h] - discharge[h]
+    for hour in range(24):
+        problem += (
+            grid[hour] + solar_used[hour] + discharge[hour]
+            == hours[hour].demand_kwh + charge[hour]
+        )
+        previous = (
+            request.battery.initial_energy_kwh if hour == 0 else battery[hour - 1]
+        )
+        problem += battery[hour] == previous + charge[hour] - discharge[hour]
 
-    # C. End-of-Day Neutrality Constraint
-    prob += battery[23] == request.battery.initial_energy_kwh
+    problem += battery[23] == request.battery.initial_energy_kwh
 
-    # 7. Execute the Solver
-    prob.solve(pulp.PULP_CBC_CMD(msg=False)) # msg=False hides terminal spam
-    
-    if pulp.LpStatus[prob.status] != 'Optimal':
-        raise ValueError("Solver could not find a feasible schedule. Constraints may be conflicting.")
+    problem.solve(pulp.PULP_CBC_CMD(msg=False))
+    if pulp.LpStatus[problem.status] != "Optimal":
+        raise OptimizationInfeasibleError(
+            "No feasible 24-hour schedule under the given constraints."
+        )
 
-    # 8. Post-Processing & The "Netting" Cleanup
-    hourly_plan = []
-    
-    for h in range(24):
-        # Extract raw values, rounding to 4 decimals to drop floating point noise
-        raw_charge = round(charge[h].varValue, 4)
-        raw_discharge = round(discharge[h].varValue, 4)
-        
-        # Netting out the charge/discharge to enforce mutual exclusivity
-        net_battery = raw_charge - raw_discharge
-        
-        if net_battery > 0.001:
+    plan: List[HourlyPlan] = []
+    for hour in range(24):
+        raw_charge = round(charge[hour].varValue or 0.0, 4)
+        raw_discharge = round(discharge[hour].varValue or 0.0, 4)
+        net = raw_charge - raw_discharge
+
+        if net > _IDLE_EPS:
             action = "charge"
-            action_kwh = net_battery
-        elif net_battery < -0.001:
+            action_kwh = net
+        elif net < -_IDLE_EPS:
             action = "discharge"
-            action_kwh = abs(net_battery)
+            action_kwh = abs(net)
         else:
             action = "idle"
             action_kwh = 0.0
 
-        plan = HourlyPlan(
-            hour=h,
-            grid_kwh=round(grid[h].varValue, 4),
-            solar_used_kwh=round(solar_used[h].varValue, 4),
-            battery_action=action,
-            battery_kwh=action_kwh,
-            battery_energy_after_kwh=round(battery[h].varValue, 4)
+        plan.append(
+            HourlyPlan(
+                hour=hour,
+                grid_kwh=round(grid[hour].varValue or 0.0, 4),
+                solar_used_kwh=round(solar_used[hour].varValue or 0.0, 4),
+                battery_action=action,
+                battery_kwh=action_kwh,
+                battery_energy_after_kwh=round(battery[hour].varValue or 0.0, 4),
+            )
         )
-        hourly_plan.append(plan)
 
-    return hourly_plan
+    return plan

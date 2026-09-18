@@ -1,17 +1,18 @@
 [project]
 name = "bup"
 version = "0.1.0"
-description = "Add your description here"
+description = "GridWise LLM — smart campus microgrid optimization API (BUP CSE Fest 2026)"
 readme = "README.md"
 requires-python = ">=3.12.3"
 dependencies = [
-    "env>=0.1.0",
     "fastapi>=0.111",
-    "langchain-openai>=1.6.2",
-    "langgraph>=1.2.11",
-    "openai>=3.15.0",
+    "openai>=1.40",
+    "pulp>=2.8",
     "pydantic>=2.7",
-    "python-dotenv>=1.2.3",
-    "requests>=2.34.2",
+    "python-dotenv>=1.0",
+    "requests>=2.31",
     "uvicorn[standard]>=0.30",
 ]
+
+[tool.uv]
+package = false

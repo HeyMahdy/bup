@@ -1,108 +1,87 @@
 """
-Pydantic v2 data models for the Smart Microgrid Energy Optimization API.
+Pydantic v2 request/response contracts for the GridWise optimization API.
 """
+
+from __future__ import annotations
 
 from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_serializer
 
 
-# ---------------------------------------------------------------------------
-# Request Models
-# ---------------------------------------------------------------------------
-
 class BatteryConfig(BaseModel):
-    """Static configuration describing the battery's physical limits."""
+    """Static battery limits for the 24-hour planning horizon."""
 
-    capacity_kwh: float = Field(..., gt=0, description="Total usable battery capacity in kWh.")
-    initial_energy_kwh: float = Field(..., ge=0, description="Energy stored in the battery at hour 0.")
-    minimum_energy_kwh: float = Field(..., ge=0, description="Floor the battery must never discharge below.")
-    max_charge_kwh_per_hour: float = Field(..., ge=0, description="Max energy that can be charged in one hour.")
-    max_discharge_kwh_per_hour: float = Field(..., ge=0, description="Max energy that can be discharged in one hour.")
+    capacity_kwh: float = Field(..., gt=0)
+    initial_energy_kwh: float = Field(..., ge=0)
+    minimum_energy_kwh: float = Field(..., ge=0)
+    max_charge_kwh_per_hour: float = Field(..., ge=0)
+    max_discharge_kwh_per_hour: float = Field(..., ge=0)
 
-    @field_validator("minimum_energy_kwh")
+    @field_validator("minimum_energy_kwh", "initial_energy_kwh")
     @classmethod
-    def minimum_not_greater_than_capacity(cls, v: float, info) -> float:
+    def within_capacity(cls, value: float, info) -> float:
         capacity = info.data.get("capacity_kwh")
-        if capacity is not None and v > capacity:
-            raise ValueError("minimum_energy_kwh cannot exceed capacity_kwh")
-        return v
-
-    @field_validator("initial_energy_kwh")
-    @classmethod
-    def initial_within_capacity(cls, v: float, info) -> float:
-        capacity = info.data.get("capacity_kwh")
-        if capacity is not None and v > capacity:
-            raise ValueError("initial_energy_kwh cannot exceed capacity_kwh")
-        return v
+        if capacity is not None and value > capacity:
+            raise ValueError(f"{info.field_name} cannot exceed capacity_kwh")
+        return value
 
 
 class HourData(BaseModel):
-    """Forecast data for a single hour of the day."""
+    """Forecast for a single hour of the day."""
 
-    hour: int = Field(..., ge=0, le=23, description="Hour of day, 0-23.")
-    demand_kwh: float = Field(..., ge=0, description="Forecasted load demand in kWh.")
-    solar_kwh: float = Field(..., ge=0, description="Forecasted solar generation in kWh.")
-    tariff_bdt_per_kwh: float = Field(..., ge=0, description="Grid tariff in BDT per kWh for this hour.")
+    hour: int = Field(..., ge=0, le=23)
+    demand_kwh: float = Field(..., ge=0)
+    solar_kwh: float = Field(..., ge=0)
+    tariff_bdt_per_kwh: float = Field(..., ge=0)
 
 
 class OptimizationRequest(BaseModel):
-    """Top-level request payload for /optimize-energy."""
+    """POST /optimize-energy request body."""
 
-    scenario_id: str = Field(..., min_length=1, description="Caller-supplied identifier for this scenario.")
-    operator_notes: List[str] = Field(
-        ...,
-        min_length=1,
-        max_length=3,
-        description="1-3 free-text operator directives to be interpreted (e.g. by an LLM) before optimizing.",
-    )
-    hours: List[HourData] = Field(
-        ..., min_length=24, max_length=24, description="Exactly 24 hourly forecast entries, one per hour of day."
-    )
+    scenario_id: str = Field(..., min_length=1)
+    operator_notes: List[str] = Field(..., min_length=1, max_length=3)
+    hours: List[HourData] = Field(..., min_length=24, max_length=24)
     battery: BatteryConfig
 
+    @field_validator("operator_notes")
+    @classmethod
+    def notes_non_empty(cls, notes: List[str]) -> List[str]:
+        if any(not isinstance(note, str) or not note.strip() for note in notes):
+            raise ValueError("operator_notes must contain non-empty strings")
+        return notes
+
     @field_validator("hours")
     @classmethod
-    def hours_cover_0_to_23_exactly_once(cls, v: List[HourData]) -> List[HourData]:
-        hours_seen = [h.hour for h in v]
-        if sorted(hours_seen) != list(range(24)):
+    def hours_cover_day_sorted(cls, hours: List[HourData]) -> List[HourData]:
+        seen = [entry.hour for entry in hours]
+        if sorted(seen) != list(range(24)):
             raise ValueError("hours must contain exactly one entry for each hour 0-23")
-        return v
+        # Normalize so hour index == list index for downstream solvers.
+        return sorted(hours, key=lambda entry: entry.hour)
 
-
-# ---------------------------------------------------------------------------
-# Response Models
-# ---------------------------------------------------------------------------
 
 class StructuredAdjustment(BaseModel):
-    """
-    Machine-actionable form of an operator directive, once interpreted.
-    Different directive types populate different optional fields.
-    """
+    """Machine-actionable form of one operator directive."""
 
-    hours: List[int] = Field(..., description="Unique hours (0-23) this adjustment applies to.")
-    factor: Optional[float] = Field(
-        None, description="Multiplicative factor (e.g. for solar_reduction directives)."
-    )
-    minimum_energy_kwh: Optional[float] = Field(
-        None, description="Override minimum battery reserve for the given hours."
-    )
-    max_grid_kwh: Optional[float] = Field(
-        None, description="Cap on grid draw for the given hours."
-    )
+    hours: List[int] = Field(...)
+    factor: Optional[float] = None
+    minimum_energy_kwh: Optional[float] = None
+    max_grid_kwh: Optional[float] = None
 
     @field_validator("hours")
     @classmethod
-    def hours_valid_and_unique(cls, v: List[int]) -> List[int]:
-        if len(v) != len(set(v)):
-            raise ValueError("hours must be unique")
-        if any(h < 0 or h > 23 for h in v):
+    def hours_unique_sorted(cls, hours: List[int]) -> List[int]:
+        if any(not isinstance(hour, int) or isinstance(hour, bool) for hour in hours):
+            raise ValueError("hours must be integers")
+        if any(hour < 0 or hour > 23 for hour in hours):
             raise ValueError("each hour must be between 0 and 23")
-        return v
+        if len(hours) != len(set(hours)):
+            raise ValueError("hours must be unique")
+        return sorted(hours)
 
     @model_serializer(mode="wrap")
-    def serialize_without_unused_fields(self, handler):
-        """Keep the API adjustment object limited to its directive-specific fields."""
+    def omit_unused_fields(self, handler):
         return {
             key: value
             for key, value in handler(self).items()
@@ -111,10 +90,10 @@ class StructuredAdjustment(BaseModel):
 
 
 class DirectiveInterpretation(BaseModel):
-    """Interpretation of a single operator note (by index into operator_notes)."""
+    """Interpretation of a single operator note."""
 
-    note_index: int = Field(..., ge=0, description="Index of the note within operator_notes.")
-    applies: bool = Field(..., description="Whether this note resulted in an actionable directive.")
+    note_index: int = Field(..., ge=0)
+    applies: bool
     directive_type: Literal[
         "solar_reduction",
         "minimum_battery_reserve",
@@ -124,22 +103,22 @@ class DirectiveInterpretation(BaseModel):
         "no_op",
     ]
     structured_adjustment: Optional[StructuredAdjustment] = None
-    explanation: str = Field(..., description="Human-readable explanation of the interpretation.")
+    explanation: str = Field(..., min_length=1)
 
 
 class HourlyPlan(BaseModel):
-    """Optimized dispatch plan for a single hour."""
+    """Optimized dispatch decision for one hour."""
 
     hour: int = Field(..., ge=0, le=23)
-    grid_kwh: float = Field(..., description="Energy drawn from the grid this hour.")
-    solar_used_kwh: float = Field(..., description="Solar energy actually used this hour.")
+    grid_kwh: float
+    solar_used_kwh: float
     battery_action: Literal["charge", "discharge", "idle"]
-    battery_kwh: float = Field(..., description="Magnitude of battery charge/discharge this hour.")
-    battery_energy_after_kwh: float = Field(..., description="Battery state of charge after this hour.")
+    battery_kwh: float
+    battery_energy_after_kwh: float
 
 
 class OptimizationResponse(BaseModel):
-    """Top-level response payload for /optimize-energy."""
+    """POST /optimize-energy response body."""
 
     scenario_id: str
     directive_interpretation: List[DirectiveInterpretation]
