@@ -6,10 +6,20 @@ from __future__ import annotations
 
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator, model_serializer
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer
 
 
-class BatteryConfig(BaseModel):
+class StrictRequestModel(BaseModel):
+    """Base for request objects that must match the published JSON schema exactly."""
+
+    model_config = ConfigDict(
+        strict=True,
+        extra="forbid",
+        allow_inf_nan=False,
+    )
+
+
+class BatteryConfig(StrictRequestModel):
     """Static battery limits for the 24-hour planning horizon."""
 
     capacity_kwh: float = Field(..., gt=0)
@@ -27,7 +37,7 @@ class BatteryConfig(BaseModel):
         return value
 
 
-class HourData(BaseModel):
+class HourData(StrictRequestModel):
     """Forecast for a single hour of the day."""
 
     hour: int = Field(..., ge=0, le=23)
@@ -36,13 +46,20 @@ class HourData(BaseModel):
     tariff_bdt_per_kwh: float = Field(..., ge=0)
 
 
-class OptimizationRequest(BaseModel):
+class OptimizationRequest(StrictRequestModel):
     """POST /optimize-energy request body."""
 
     scenario_id: str = Field(..., min_length=1)
     operator_notes: List[str] = Field(..., min_length=1, max_length=3)
     hours: List[HourData] = Field(..., min_length=24, max_length=24)
     battery: BatteryConfig
+
+    @field_validator("scenario_id")
+    @classmethod
+    def scenario_id_non_empty(cls, scenario_id: str) -> str:
+        if not scenario_id.strip():
+            raise ValueError("scenario_id must be a non-empty string")
+        return scenario_id
 
     @field_validator("operator_notes")
     @classmethod

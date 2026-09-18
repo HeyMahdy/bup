@@ -47,7 +47,7 @@ async def validation_exception_handler(
 ) -> JSONResponse:
     logger.info("Request validation failed for %s: %s", request.url.path, exc.errors())
     return JSONResponse(
-        status_code=422,
+        status_code=400,
         content=jsonable_encoder({"detail": exc.errors()}),
     )
 
