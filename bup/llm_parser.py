@@ -1,8 +1,10 @@
 import os
 from typing import List
+from dotenv import load_dotenv
 from openai import AsyncOpenAI
 from pydantic import BaseModel
 
+load_dotenv()
 # Import the exact schema you defined for the FastAPI response
 from models import DirectiveInterpretation
 
