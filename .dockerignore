@@ -1,0 +1,28 @@
+# Git / secrets
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local tooling
+.venv
+venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.idea
+.vscode
+
+# Docs / contest assets not needed at runtime
+*.pdf
+README.md
+payload.json
+more test cases.json
+BUP_CSE_FEST_2026_Preli_Public_Sample_Cases.json
+bup/BUP_CSE_FEST_2026_Preli_Public_Sample_Cases.json
+bup/api_matcher.py

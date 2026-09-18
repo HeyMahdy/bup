@@ -79,6 +79,68 @@ uv run python api_matcher.py
 Expected: `TEST RUN COMPLETE: 10 passed | 0 failed` against
 `BUP_CSE_FEST_2026_Preli_Public_Sample_Cases.json`.
 
+## Docker fallback
+
+The image listens on **port 8000**, binds **`0.0.0.0`**, and does **not** bake in
+API keys. Pass credentials at runtime.
+
+### Build locally
+
+```bash
+docker build -t gridwise-llm:0.1.0 .
+```
+
+### Run (verified command)
+
+```bash
+docker run --rm -p 8000:8000 \
+  -e OPENAI_API_KEY=sk-your-key-here \
+  -e OPENAI_MODEL=gpt-4o-mini \
+  gridwise-llm:0.1.0
+```
+
+Windows PowerShell:
+
+```powershell
+docker run --rm -p 8000:8000 `
+  -e OPENAI_API_KEY=sk-your-key-here `
+  -e OPENAI_MODEL=gpt-4o-mini `
+  gridwise-llm:0.1.0
+```
+
+Health check after start:
+
+```bash
+curl http://127.0.0.1:8000/health
+# {"status":"ok"}
+```
+
+### Registry image (submission reference)
+
+Local image verified: `gridwise-llm:0.1.0`  
+Image digest (local build): `sha256:2e3e00e7896bc6a95f3f9484afb2fb89706536a188905f1130d121ea4c84c019`
+
+Tag and push to your registry (replace with your namespace, then keep the
+pushed tag/digest in the submission form):
+
+```bash
+docker tag gridwise-llm:0.1.0 ghcr.io/heymahdy/gridwise-llm:0.1.0
+docker push ghcr.io/heymahdy/gridwise-llm:0.1.0
+```
+
+Pull / run fallback for organizers (after push):
+
+```bash
+docker pull ghcr.io/heymahdy/gridwise-llm:0.1.0
+docker run --rm -p 8000:8000 \
+  -e OPENAI_API_KEY=$OPENAI_API_KEY \
+  -e OPENAI_MODEL=gpt-4o-mini \
+  ghcr.io/heymahdy/gridwise-llm:0.1.0
+```
+
+Required runtime environment variables: `OPENAI_API_KEY` (required),
+`OPENAI_MODEL` (optional, default `gpt-4o-mini`). Exposed port: **8000**.
+Binds to `0.0.0.0` (no secrets in the image layers).
 ## LLM, guardrails, and optimizer
 
 - **LLM role:** Mandatory interpretation of `operator_notes` into
@@ -103,10 +165,8 @@ python-dotenv, PuLP, requests.
   quota exhaustion return a controlled `500` without stack traces or secrets.
 - Synchronous CBC solve runs on the request path (acceptable for the 24-hour
   LP; not designed for high concurrency).
-- Docker / public deployment artifacts are out of scope for this local package
-  (add separately for contest submission if required).
-- Do not commit `.env` or API keys. Rotate any key that was shared in chat or
-  pasted into tickets.
+- Do not commit `.env` or API keys. Never bake secrets into the Docker image.
+- Rotate any key that was shared in chat or pasted into tickets.
 
 ## Credits
 

@@ -10,6 +10,9 @@ _CLOCK = re.compile(
     (?:
         (?P<noon>noon|midnight)
         |
+        (?P<hour24>\d{1,2})\s*:\s*(?P<minute24>\d{2})
+        (?!\s*[ap]\.?m\.?)
+        |
         (?P<hour>\d{1,2})
         (?:
             \s*:\s*(?P<minute>\d{2})
@@ -44,16 +47,19 @@ def parse_clock_token(token: str) -> Optional[int]:
         word = match.group("noon").lower()
         return 12 if word == "noon" else 0
 
+    if match.group("hour24") is not None:
+        hour = int(match.group("hour24"))
+        minute = int(match.group("minute24"))
+        if minute != 0 or hour < 0 or hour > 24:
+            return None
+        return hour
+
     hour = int(match.group("hour"))
     minute = int(match.group("minute") or 0)
     meridiem = match.group("meridiem").lower().replace(".", "")
 
     if hour < 1 or hour > 12 or minute != 0:
-        # Contest windows are whole-hour; reject partial hours.
-        if minute != 0:
-            return None
-        if hour < 1 or hour > 12:
-            return None
+        return None
 
     if meridiem.startswith("p") and hour != 12:
         hour += 12

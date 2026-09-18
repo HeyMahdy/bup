@@ -250,17 +250,20 @@ def validate_case(case, actual):
     if not isinstance(actual.get("plan_summary"), str):
         errors.append("plan_summary must be a string")
 
+    expected_interpretations = expected["directive_interpretation"]
     errors.extend(
         validate_interpretations(
             actual.get("directive_interpretation"),
-            expected["directive_interpretation"],
+            expected_interpretations,
         )
     )
-    errors.extend(
-        replay_hourly_plan(payload, expected["directive_interpretation"], actual)
-    )
+    # Replay against organizer ground-truth directives (not the team's wording).
+    errors.extend(replay_hourly_plan(payload, expected_interpretations, actual))
 
-    if not close(actual.get("total_cost_bdt"), expected["total_cost_bdt"]):
+    # Extra packs may only provide interpretation ground truth (no reference cost).
+    if "total_cost_bdt" in expected and not close(
+        actual.get("total_cost_bdt"), expected["total_cost_bdt"]
+    ):
         errors.append(
             f"optimization cost: expected {expected['total_cost_bdt']}, "
             f"got {actual.get('total_cost_bdt')!r}"
@@ -269,16 +272,17 @@ def validate_case(case, actual):
 
 
 def run_matcher():
+    cases_path = Path(os.getenv("CASES_FILE", str(CASES_FILE)))
     try:
-        with CASES_FILE.open(encoding="utf-8") as file:
+        with cases_path.open(encoding="utf-8") as file:
             cases = json.load(file)["cases"]
     except (OSError, KeyError, json.JSONDecodeError) as exc:
-        print(f"Could not load sample cases: {exc}")
+        print(f"Could not load sample cases from {cases_path}: {exc}")
         return 1
 
     passed = 0
     failed = 0
-    print(f"Testing {len(cases)} cases against {API_URL}\n")
+    print(f"Testing {len(cases)} cases from {cases_path.name} against {API_URL}\n")
 
     for case in cases:
         try:
