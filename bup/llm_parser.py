@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import List
 
 from openai import APIError, AsyncOpenAI, AuthenticationError, RateLimitError
@@ -52,8 +53,24 @@ Hours must be unique integers 0-23 in ascending order.
 OTHER RULES:
 - 'applies' is false ONLY for 'no_op'; true for every other directive.
 - Do not invent demand, solar, tariff, battery hardware limits, or unsupported types.
+- Extract operator-stated numeric values exactly even when they exceed an allowed
+  range. Never clamp, repair, or turn such a directive into no_op; deterministic
+  guardrails are responsible for rejecting invalid values.
 - Distractors that do not affect this 24-hour energy schedule must be no_op.
+- A directive is actionable only when the note supplies every required value and a
+  concrete whole-hour window. Never guess a number or translate vague periods such
+  as "during the evening" into hours.
+- A vague request such as "maintain some emergency reserve during the evening"
+  has no numeric reserve or exact time window and MUST be no_op.
 """.strip()
+
+
+_EXPLICIT_RESERVE_VALUE = re.compile(
+    r"(?:\d+(?:\.\d+)?\s*(?:kwh|%|percent)|"
+    r"(?:half|quarter|third|three[- ]quarters?)\s+(?:of\s+)?(?:the\s+)?"
+    r"(?:battery(?:'s)?\s+)?capacity)",
+    re.IGNORECASE,
+)
 
 
 class DirectiveExtractionResult(BaseModel):
@@ -111,6 +128,32 @@ def sanitize_interpretations(
         adj = item.structured_adjustment
         note_text = request.operator_notes[item.note_index]
         parsed_hours = hours_from_note(note_text)
+
+        # A reserve constraint needs both a concrete time window and a reserve
+        # quantity stated by the operator. Do not allow the model to invent either
+        # value for vague requests such as "some reserve during the evening".
+        if (
+            item.directive_type == "minimum_battery_reserve"
+            and (
+                parsed_hours is None
+                or _EXPLICIT_RESERVE_VALUE.search(note_text) is None
+            )
+        ):
+            cleaned.append(
+                item.model_copy(
+                    update={
+                        "applies": False,
+                        "directive_type": "no_op",
+                        "structured_adjustment": None,
+                        "explanation": (
+                            "The note does not provide both a numeric reserve "
+                            "and a concrete whole-hour window."
+                        ),
+                    }
+                )
+            )
+            continue
+
         hours = parsed_hours if parsed_hours is not None else list(adj.hours)
         if item.directive_type == "solar_reduction":
             new_adj = StructuredAdjustment(hours=hours, factor=adj.factor)

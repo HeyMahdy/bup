@@ -287,9 +287,24 @@ def run_matcher():
     for case in cases:
         try:
             response = requests.post(API_URL, json=case["input"], timeout=30)
-            response.raise_for_status()
-            actual = response.json()
-            errors = validate_case(case, actual)
+            expected_status = case.get("expected_status", 200)
+            if response.status_code != expected_status:
+                errors = [
+                    f"expected HTTP {expected_status}, got HTTP {response.status_code}"
+                ]
+            elif expected_status != 200:
+                error_body = response.json()
+                expected_error = case.get("expected_error_contains")
+                detail = error_body.get("detail") if isinstance(error_body, dict) else None
+                if expected_error and expected_error not in str(detail):
+                    errors = [
+                        f"expected error containing {expected_error!r}, got {detail!r}"
+                    ]
+                else:
+                    errors = []
+            else:
+                actual = response.json()
+                errors = validate_case(case, actual)
         except (requests.RequestException, ValueError) as exc:
             errors = [f"API request failed: {exc}"]
 

@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import math
+import re
 from typing import List
 
 from exceptions import GuardrailValidationError
 from models import DirectiveInterpretation, OptimizationRequest
+
+
+_EXPLICIT_KWH = re.compile(r"(?P<value>\d+(?:\.\d+)?)\s*kwh\b", re.IGNORECASE)
 
 
 def validate_interpretations(
@@ -14,6 +18,18 @@ def validate_interpretations(
     interpretations: List[DirectiveInterpretation],
 ) -> List[DirectiveInterpretation]:
     """Validate LLM output before it reaches the optimizer."""
+
+    # Cross-check explicit reserve quantities in the source note. The LLM must
+    # not hide an invalid operator value by clamping it or returning no_op.
+    for note_index, note in enumerate(request.operator_notes):
+        if not re.search(r"\b(?:reserve|battery)\b", note, re.IGNORECASE):
+            continue
+        for match in _EXPLICIT_KWH.finditer(note):
+            reserve = float(match.group("value"))
+            if not math.isfinite(reserve) or reserve > request.battery.capacity_kwh:
+                raise GuardrailValidationError(
+                    f"Note {note_index}: battery reserve must be between 0 and battery capacity"
+                )
 
     if len(interpretations) != len(request.operator_notes):
         raise GuardrailValidationError(
